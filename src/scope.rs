@@ -1,7 +1,4 @@
-use executor::futures::{
-    util::{AsyncReadExt, AsyncWriteExt},
-    AsyncRead, AsyncWrite,
-};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::{
     serdes::{Decode, Encode},

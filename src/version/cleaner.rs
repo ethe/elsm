@@ -1,7 +1,9 @@
 use std::{collections::BTreeMap, fs, io, sync::Arc};
 
-use executor::futures::StreamExt;
-use futures::channel::mpsc::{channel, Receiver, Sender};
+use futures::{
+    channel::mpsc::{channel, Receiver, Sender},
+    StreamExt,
+};
 
 use crate::{wal::FileId, DbOption};
 

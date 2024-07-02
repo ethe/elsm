@@ -4,7 +4,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use executor::futures::Stream;
+use futures::Stream;
 use pin_project::pin_project;
 use thiserror::Error;
 

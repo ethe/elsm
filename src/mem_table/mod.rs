@@ -152,7 +152,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use futures::{executor::block_on, io::Cursor};
+    use std::io::Cursor;
+
+    use futures::executor::block_on;
 
     use super::MemTable;
     use crate::{

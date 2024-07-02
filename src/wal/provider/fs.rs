@@ -6,10 +6,11 @@ use std::{
 };
 
 use async_stream::stream;
-use executor::futures::Stream;
+use futures::Stream;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
 use regex::Regex;
+use tokio::fs::File;
 
 use super::WalProvider;
 use crate::wal::FileId;
@@ -31,7 +32,7 @@ impl Fs {
 }
 
 impl WalProvider for Fs {
-    type File = executor::fs::File;
+    type File = File;
 
     async fn open(&self, fid: FileId) -> io::Result<Self::File> {
         Ok(OpenOptions::new()

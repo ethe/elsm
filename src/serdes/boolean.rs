@@ -1,6 +1,6 @@
 use std::{io, mem::size_of};
 
-use executor::futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::serdes::{Decode, Encode};
 

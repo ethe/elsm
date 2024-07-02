@@ -5,11 +5,9 @@ use std::{error::Error, future::Future, io, marker::PhantomData};
 
 use async_stream::stream;
 use checksum::{HashReader, HashWriter};
-use futures::{
-    io::{BufReader, BufWriter},
-    AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, Stream,
-};
+use futures::Stream;
 use thiserror::Error;
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use ulid::Ulid;
 
 use self::provider::WalProvider;
@@ -64,8 +62,6 @@ where
     ) -> impl Future<Output = Result<(), WriteError<<Record<&K, &V> as Encode>::Error>>>;
 
     fn flush(&mut self) -> impl Future<Output = io::Result<()>>;
-
-    fn close(self) -> impl Future<Output = io::Result<()>>;
 }
 
 pub trait WalRecover<K, V> {
@@ -114,11 +110,6 @@ where
     async fn flush(&mut self) -> io::Result<()> {
         self.file.flush().await
     }
-
-    async fn close(mut self) -> io::Result<()> {
-        self.file.flush().await?;
-        self.file.close().await
-    }
 }
 
 impl<F, K, V> WalRecover<K, V> for WalFile<F, K, V>
@@ -132,7 +123,7 @@ where
     fn recover(&mut self) -> impl Stream<Item = Result<Record<K, V>, Self::Error>> {
         stream! {
             // Safety: https://github.com/rust-lang/futures-rs/pull/2848 fix this, waiting for release
-            let mut file = BufReader::new(unsafe { std::mem::transmute::<_, &mut F>(std::mem::transmute::<_, &mut BufWriter<Vec<_>>>(&mut self.file).get_mut()) });
+            let mut file = BufReader::new(&mut self.file);
 
             loop {
                 if file.buffer().is_empty() && file.fill_buf().await.map_err(RecoverError::Io)?.is_empty() {
@@ -180,9 +171,9 @@ pub(crate) enum RecoverError<E: std::error::Error> {
 
 #[cfg(test)]
 mod tests {
-    use std::pin::pin;
+    use std::{io::Cursor, pin::pin};
 
-    use futures::{executor::block_on, io::Cursor, StreamExt};
+    use futures::{executor::block_on, StreamExt};
 
     use super::{FileId, Record, WalFile, WalRecover, WalWrite};
     use crate::record::RecordType;

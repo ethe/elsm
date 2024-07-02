@@ -26,22 +26,21 @@ use std::{
 };
 
 use async_lock::{Mutex, RwLock};
-use executor::{
-    futures::{AsyncRead, StreamExt},
-    spawn,
-};
 use futures::{
     channel::{
         mpsc::{channel, Sender},
         oneshot,
     },
-    executor::block_on,
-    AsyncWrite,
+    StreamExt,
 };
 use mem_table::MemTable;
 use oracle::Oracle;
 use record::{Record, RecordType};
 use serdes::Encode;
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    spawn,
+};
 use tracing::error;
 use transaction::Transaction;
 use wal::{provider::WalProvider, WalFile, WalManager, WalWrite, WriteError};
@@ -119,7 +118,7 @@ where
         let wal_manager = Arc::new(WalManager::new(wal_provider));
         let mutable_shards = RwLock::new(MutableShard {
             mutable: MemTable::default(),
-            wal: block_on(wal_manager.create_wal_file()).unwrap(),
+            wal: wal_manager.create_wal_file().await.unwrap(),
         });
 
         let immutable = Arc::new(RwLock::new(VecDeque::new()));
@@ -139,8 +138,7 @@ where
             if let Err(err) = cleaner.listen().await {
                 error!("[Cleaner Error]: {}", err)
             }
-        })
-        .detach();
+        });
         spawn(async move {
             loop {
                 match task_rx.next().await {
@@ -154,8 +152,7 @@ where
                     },
                 }
             }
-        })
-        .detach();
+        });
 
         let mut db = Db {
             option,
@@ -245,7 +242,6 @@ where
                         .await
                         .map_err(WriteError::Io)?;
                     mem::swap(&mut guard.wal, &mut wal_file);
-                    wal_file.close().await.map_err(WriteError::Io)?;
                 }
                 let mut mem_table = MemTable::default();
                 mem::swap(&mut guard.mutable, &mut mem_table);
@@ -586,12 +582,10 @@ mod tests {
         record_batch::RecordBatch,
     };
     use elsm_marco::elsm_schema;
-    use executor::{
-        futures::{AsyncRead, AsyncWrite, StreamExt},
-        ExecutorBuilder,
-    };
+    use futures::StreamExt;
     use lazy_static::lazy_static;
     use tempfile::TempDir;
+    use tokio::io::{AsyncRead, AsyncWrite};
 
     use crate::{
         io,
@@ -621,79 +615,331 @@ mod tests {
         pub(crate) u_number_3: u64,
     }
 
-    #[test]
-    fn test_user() {
+    #[tokio::test]
+    async fn test_user() {
         let temp_dir = TempDir::new().unwrap();
 
-        ExecutorBuilder::new().build().unwrap().block_on(async {
-            let db = Arc::new(
-                Db::new(
-                    LocalOracle::default(),
-                    InMemProvider::default(),
-                    DbOption::new(temp_dir.path().to_path_buf()),
-                )
-                .await
-                .unwrap(),
-            );
-            let user_0 = UserInner::new(0, "lizeren".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0);
-            let user_1 = UserInner::new(1, "2333".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0);
-            let user_2 = UserInner::new(2, "ghost".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0);
+        let db = Arc::new(
+            Db::new(
+                LocalOracle::default(),
+                InMemProvider::default(),
+                DbOption::new(temp_dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap(),
+        );
+        let user_0 = UserInner::new(0, "lizeren".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0);
+        let user_1 = UserInner::new(1, "2333".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0);
+        let user_2 = UserInner::new(2, "ghost".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0);
 
-            let mut t0 = db.new_txn();
+        let mut t0 = db.new_txn();
 
-            t0.set(user_0.primary_key(), user_0.clone());
-            t0.set(user_1.primary_key(), user_1.clone());
-            t0.set(user_2.primary_key(), user_2.clone());
+        t0.set(user_0.primary_key(), user_0.clone());
+        t0.set(user_1.primary_key(), user_1.clone());
+        t0.set(user_2.primary_key(), user_2.clone());
 
-            t0.commit().await.unwrap();
+        t0.commit().await.unwrap();
 
-            let txn = db.new_txn();
+        let txn = db.new_txn();
 
-            assert_eq!(txn.get(&user_0.primary_key()).await, Some(user_0));
-            assert_eq!(txn.get(&user_1.primary_key()).await, Some(user_1));
-            assert_eq!(txn.get(&user_2.primary_key()).await, Some(user_2));
-        });
+        assert_eq!(txn.get(&user_0.primary_key()).await, Some(user_0));
+        assert_eq!(txn.get(&user_1.primary_key()).await, Some(user_1));
+        assert_eq!(txn.get(&user_2.primary_key()).await, Some(user_2));
     }
 
-    #[test]
-    fn read_committed() {
+    #[tokio::test]
+    async fn read_committed() {
         let temp_dir = TempDir::new().unwrap();
 
-        ExecutorBuilder::new().build().unwrap().block_on(async {
-            let db = Arc::new(
-                Db::new(
-                    LocalOracle::default(),
-                    InMemProvider::default(),
-                    DbOption::new(temp_dir.path().to_path_buf()),
-                )
-                .await
-                .unwrap(),
-            );
+        let db = Arc::new(
+            Db::new(
+                LocalOracle::default(),
+                InMemProvider::default(),
+                DbOption::new(temp_dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap(),
+        );
 
-            let mut txn = db.new_txn();
-            txn.set(
-                0,
-                UserInner::new(0, "0".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
-            );
-            txn.set(
+        let mut txn = db.new_txn();
+        txn.set(
+            0,
+            UserInner::new(0, "0".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
+        );
+        txn.set(
+            1,
+            UserInner::new(1, "1".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
+        );
+        txn.commit().await.unwrap();
+
+        let mut t0 = db.new_txn();
+        let mut t1 = db.new_txn();
+
+        t0.set(0, t0.get(&1).await.unwrap());
+        t1.set(1, t1.get(&0).await.unwrap());
+
+        t0.commit().await.unwrap();
+        t1.commit().await.unwrap();
+
+        let txn = db.new_txn();
+
+        assert_eq!(
+            txn.get(&Arc::from(0)).await,
+            Some(UserInner::new(
                 1,
-                UserInner::new(1, "1".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
-            );
-            txn.commit().await.unwrap();
+                "1".to_string(),
+                false,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+            ))
+        );
+        assert_eq!(
+            txn.get(&Arc::from(1)).await,
+            Some(UserInner::new(
+                0,
+                "0".to_string(),
+                false,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+            ))
+        );
+    }
 
-            let mut t0 = db.new_txn();
-            let mut t1 = db.new_txn();
+    #[tokio::test]
+    async fn range() {
+        let temp_dir = TempDir::new().unwrap();
 
-            t0.set(0, t0.get(&1).await.unwrap());
-            t1.set(1, t1.get(&0).await.unwrap());
+        let db = Arc::new(
+            Db::new(
+                LocalOracle::default(),
+                InMemProvider::default(),
+                DbOption::new(temp_dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap(),
+        );
 
-            t0.commit().await.unwrap();
-            t1.commit().await.unwrap();
+        let mut txn = db.new_txn();
+        txn.set(
+            0,
+            UserInner::new(0, "0".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
+        );
+        txn.set(
+            1,
+            UserInner::new(1, "1".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
+        );
+        txn.set(
+            2,
+            UserInner::new(2, "2".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
+        );
+        txn.set(
+            3,
+            UserInner::new(3, "3".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
+        );
+        txn.commit().await.unwrap();
 
-            let txn = db.new_txn();
+        let mut iter: MergeStream<UserInner> = db.range(Some(&1), Some(&2), &1).await.unwrap();
 
+        assert_eq!(
+            iter.next().await.unwrap().unwrap(),
+            (
+                1,
+                Some(UserInner::new(
+                    1,
+                    "1".to_string(),
+                    false,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                ))
+            )
+        );
+        assert_eq!(
+            iter.next().await.unwrap().unwrap(),
+            (
+                2,
+                Some(UserInner::new(
+                    2,
+                    "2".to_string(),
+                    false,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                ))
+            )
+        );
+
+        let mut txn_1 = db.new_txn();
+        txn_1.set(
+            5,
+            UserInner::new(5, "5".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
+        );
+        txn_1.set(
+            4,
+            UserInner::new(4, "4".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
+        );
+
+        let mut txn_2 = db.new_txn();
+        txn_2.set(
+            5,
+            UserInner::new(4, "4".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
+        );
+        txn_2.set(
+            4,
+            UserInner::new(5, "5".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
+        );
+        txn_2.commit().await.unwrap();
+
+        let mut iter = txn_1.range(Some(&1), Some(&4)).await.unwrap();
+
+        assert_eq!(
+            iter.next().await.unwrap().unwrap(),
+            (
+                1,
+                Some(UserInner::new(
+                    1,
+                    "1".to_string(),
+                    false,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                ))
+            )
+        );
+        assert_eq!(
+            iter.next().await.unwrap().unwrap(),
+            (
+                2,
+                Some(UserInner::new(
+                    2,
+                    "2".to_string(),
+                    false,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                ))
+            )
+        );
+        assert_eq!(
+            iter.next().await.unwrap().unwrap(),
+            (
+                3,
+                Some(UserInner::new(
+                    3,
+                    "3".to_string(),
+                    false,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                ))
+            )
+        );
+        assert_eq!(
+            iter.next().await.unwrap().unwrap(),
+            (
+                4,
+                Some(UserInner::new(
+                    4,
+                    "4".to_string(),
+                    false,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                ))
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn write_conflicts() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let db = Arc::new(
+            Db::new(
+                LocalOracle::default(),
+                InMemProvider::default(),
+                DbOption::new(temp_dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap(),
+        );
+
+        let mut txn = db.new_txn();
+        txn.set(
+            0,
+            UserInner::new(0, "0".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
+        );
+        txn.set(
+            1,
+            UserInner::new(1, "1".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
+        );
+        txn.commit().await.unwrap();
+
+        let mut t0 = db.new_txn();
+        let mut t1 = db.new_txn();
+        let mut t2 = db.new_txn();
+
+        t0.set(0, t0.get(&1).await.unwrap());
+        t1.set(0, t1.get(&0).await.unwrap());
+        t1.set(
+            2,
+            UserInner::new(2, "2".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
+        );
+        t2.set(
+            2,
+            UserInner::new(3, "3".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
+        );
+
+        t0.commit().await.unwrap();
+
+        let commit = t1.commit().await;
+        assert!(commit.is_err());
+        assert!(t2.commit().await.is_ok());
+        if let Err(CommitError::WriteConflict(keys)) = commit {
             assert_eq!(
-                txn.get(&Arc::from(0)).await,
+                db.new_txn().get(&keys[0]).await,
                 Some(UserInner::new(
                     1,
                     "1".to_string(),
@@ -708,269 +954,9 @@ mod tests {
                     0
                 ))
             );
-            assert_eq!(
-                txn.get(&Arc::from(1)).await,
-                Some(UserInner::new(
-                    0,
-                    "0".to_string(),
-                    false,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0
-                ))
-            );
-        });
-    }
-
-    #[test]
-    fn range() {
-        let temp_dir = TempDir::new().unwrap();
-
-        ExecutorBuilder::new().build().unwrap().block_on(async {
-            let db = Arc::new(
-                Db::new(
-                    LocalOracle::default(),
-                    InMemProvider::default(),
-                    DbOption::new(temp_dir.path().to_path_buf()),
-                )
-                .await
-                .unwrap(),
-            );
-
-            let mut txn = db.new_txn();
-            txn.set(
-                0,
-                UserInner::new(0, "0".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
-            );
-            txn.set(
-                1,
-                UserInner::new(1, "1".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
-            );
-            txn.set(
-                2,
-                UserInner::new(2, "2".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
-            );
-            txn.set(
-                3,
-                UserInner::new(3, "3".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
-            );
-            txn.commit().await.unwrap();
-
-            let mut iter: MergeStream<UserInner> = db.range(Some(&1), Some(&2), &1).await.unwrap();
-
-            assert_eq!(
-                iter.next().await.unwrap().unwrap(),
-                (
-                    1,
-                    Some(UserInner::new(
-                        1,
-                        "1".to_string(),
-                        false,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0
-                    ))
-                )
-            );
-            assert_eq!(
-                iter.next().await.unwrap().unwrap(),
-                (
-                    2,
-                    Some(UserInner::new(
-                        2,
-                        "2".to_string(),
-                        false,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0
-                    ))
-                )
-            );
-
-            let mut txn_1 = db.new_txn();
-            txn_1.set(
-                5,
-                UserInner::new(5, "5".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
-            );
-            txn_1.set(
-                4,
-                UserInner::new(4, "4".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
-            );
-
-            let mut txn_2 = db.new_txn();
-            txn_2.set(
-                5,
-                UserInner::new(4, "4".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
-            );
-            txn_2.set(
-                4,
-                UserInner::new(5, "5".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
-            );
-            txn_2.commit().await.unwrap();
-
-            let mut iter = txn_1.range(Some(&1), Some(&4)).await.unwrap();
-
-            assert_eq!(
-                iter.next().await.unwrap().unwrap(),
-                (
-                    1,
-                    Some(UserInner::new(
-                        1,
-                        "1".to_string(),
-                        false,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0
-                    ))
-                )
-            );
-            assert_eq!(
-                iter.next().await.unwrap().unwrap(),
-                (
-                    2,
-                    Some(UserInner::new(
-                        2,
-                        "2".to_string(),
-                        false,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0
-                    ))
-                )
-            );
-            assert_eq!(
-                iter.next().await.unwrap().unwrap(),
-                (
-                    3,
-                    Some(UserInner::new(
-                        3,
-                        "3".to_string(),
-                        false,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0
-                    ))
-                )
-            );
-            assert_eq!(
-                iter.next().await.unwrap().unwrap(),
-                (
-                    4,
-                    Some(UserInner::new(
-                        4,
-                        "4".to_string(),
-                        false,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0
-                    ))
-                )
-            );
-        });
-    }
-
-    #[test]
-    fn write_conflicts() {
-        let temp_dir = TempDir::new().unwrap();
-
-        ExecutorBuilder::new().build().unwrap().block_on(async {
-            let db = Arc::new(
-                Db::new(
-                    LocalOracle::default(),
-                    InMemProvider::default(),
-                    DbOption::new(temp_dir.path().to_path_buf()),
-                )
-                .await
-                .unwrap(),
-            );
-
-            let mut txn = db.new_txn();
-            txn.set(
-                0,
-                UserInner::new(0, "0".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
-            );
-            txn.set(
-                1,
-                UserInner::new(1, "1".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
-            );
-            txn.commit().await.unwrap();
-
-            let mut t0 = db.new_txn();
-            let mut t1 = db.new_txn();
-            let mut t2 = db.new_txn();
-
-            t0.set(0, t0.get(&1).await.unwrap());
-            t1.set(0, t1.get(&0).await.unwrap());
-            t1.set(
-                2,
-                UserInner::new(2, "2".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
-            );
-            t2.set(
-                2,
-                UserInner::new(3, "3".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
-            );
-
-            t0.commit().await.unwrap();
-
-            let commit = t1.commit().await;
-            assert!(commit.is_err());
-            assert!(t2.commit().await.is_ok());
-            if let Err(CommitError::WriteConflict(keys)) = commit {
-                assert_eq!(
-                    db.new_txn().get(&keys[0]).await,
-                    Some(UserInner::new(
-                        1,
-                        "1".to_string(),
-                        false,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0
-                    ))
-                );
-                return;
-            }
-            panic!("unreachable");
-        });
+            return;
+        }
+        panic!("unreachable");
     }
 
     fn test_items() -> Vec<UserInner> {
@@ -1014,67 +1000,12 @@ mod tests {
         ]
     }
 
-    #[test]
-    fn read_from_disk() {
+    #[tokio::test]
+    async fn read_from_disk() {
         let temp_dir = TempDir::new().unwrap();
 
-        ExecutorBuilder::new().build().unwrap().block_on(async {
-            let db = Arc::new(
-                Db::new(
-                    LocalOracle::default(),
-                    Fs::new(temp_dir.path()).unwrap(),
-                    DbOption {
-                        // TIPS: kv size in test case is 17
-                        path: temp_dir.path().to_path_buf(),
-                        max_mem_table_size: 25,
-                        immutable_chunk_num: 1,
-                        major_threshold_with_sst_size: 5,
-                        level_sst_magnification: 10,
-                        max_sst_file_size: 2 * 1024 * 1024,
-                        clean_channel_buffer: 10,
-                    },
-                )
-                .await
-                .unwrap(),
-            );
-
-            let fn_write = |db: Arc<Db<_, _, _>>, user: UserInner| async move {
-                db.write(RecordType::Full, 0, user).await.unwrap();
-            };
-            for item in test_items() {
-                fn_write(db.clone(), item).await;
-            }
-
-            assert_eq!(
-                db.get(&20, &0).await,
-                Some(UserInner::new(
-                    20,
-                    "20".to_string(),
-                    false,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0
-                ))
-            );
-
-            let mut stream: MergeStream<UserInner> = db.range(None, None, &0).await.unwrap();
-
-            let mut results = vec![];
-            while let Some(result) = stream.next().await {
-                results.push(result.unwrap().1.unwrap());
-            }
-            assert_eq!(results.len(), test_items().len());
-            assert_eq!(results, test_items());
-
-            drop(stream);
-            drop(db);
-
-            let db = Db::new(
+        let db = Arc::new(
+            Db::new(
                 LocalOracle::default(),
                 Fs::new(temp_dir.path()).unwrap(),
                 DbOption {
@@ -1089,105 +1020,156 @@ mod tests {
                 },
             )
             .await
-            .unwrap();
+            .unwrap(),
+        );
 
-            assert_eq!(
-                db.get(&20, &0).await,
-                Some(UserInner::new(
-                    20,
-                    "20".to_string(),
-                    false,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0
-                ))
-            );
-            let mut stream: MergeStream<UserInner> = db.range(None, None, &0).await.unwrap();
+        let fn_write = |db: Arc<Db<_, _, _>>, user: UserInner| async move {
+            db.write(RecordType::Full, 0, user).await.unwrap();
+        };
+        for item in test_items() {
+            fn_write(db.clone(), item).await;
+        }
 
-            let mut results = vec![];
-            while let Some(result) = stream.next().await {
-                results.push(result.unwrap().1.unwrap());
-            }
-            assert_eq!(results.len(), test_items().len());
-            assert_eq!(results, test_items());
+        assert_eq!(
+            db.get(&20, &0).await,
+            Some(UserInner::new(
+                20,
+                "20".to_string(),
+                false,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+            ))
+        );
 
-            drop(stream);
-        });
+        let mut stream: MergeStream<UserInner> = db.range(None, None, &0).await.unwrap();
+
+        let mut results = vec![];
+        while let Some(result) = stream.next().await {
+            results.push(result.unwrap().1.unwrap());
+        }
+        assert_eq!(results.len(), test_items().len());
+        assert_eq!(results, test_items());
+
+        drop(stream);
+        drop(db);
+
+        let db = Db::new(
+            LocalOracle::default(),
+            Fs::new(temp_dir.path()).unwrap(),
+            DbOption {
+                // TIPS: kv size in test case is 17
+                path: temp_dir.path().to_path_buf(),
+                max_mem_table_size: 25,
+                immutable_chunk_num: 1,
+                major_threshold_with_sst_size: 5,
+                level_sst_magnification: 10,
+                max_sst_file_size: 2 * 1024 * 1024,
+                clean_channel_buffer: 10,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            db.get(&20, &0).await,
+            Some(UserInner::new(
+                20,
+                "20".to_string(),
+                false,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+            ))
+        );
+        let mut stream: MergeStream<UserInner> = db.range(None, None, &0).await.unwrap();
+
+        let mut results = vec![];
+        while let Some(result) = stream.next().await {
+            results.push(result.unwrap().1.unwrap());
+        }
+        assert_eq!(results.len(), test_items().len());
+        assert_eq!(results, test_items());
+
+        drop(stream);
     }
 
-    #[test]
-    fn recover_from_wal() {
+    #[tokio::test]
+    async fn recover_from_wal() {
         let temp_dir = TempDir::new().unwrap();
 
-        ExecutorBuilder::new().build().unwrap().block_on(async {
-            let db = Arc::new(
-                Db::new(
-                    LocalOracle::default(),
-                    Fs::new(temp_dir.path()).unwrap(),
-                    DbOption::new(temp_dir.path().to_path_buf()),
-                )
-                .await
-                .unwrap(),
-            );
-
-            let mut txn = db.new_txn();
-            txn.set(
-                0,
-                UserInner::new(0, "0".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
-            );
-            txn.set(
-                1,
-                UserInner::new(1, "1".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
-            );
-            txn.commit().await.unwrap();
-
-            drop(db);
-
-            let db = Db::new(
+        let db = Arc::new(
+            Db::new(
                 LocalOracle::default(),
                 Fs::new(temp_dir.path()).unwrap(),
                 DbOption::new(temp_dir.path().to_path_buf()),
             )
             .await
-            .unwrap();
+            .unwrap(),
+        );
 
-            assert_eq!(
-                db.get(&0, &1).await,
-                Some(UserInner::new(
-                    0,
-                    "0".to_string(),
-                    false,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0
-                )),
-            );
-            assert_eq!(
-                db.get(&1, &1).await,
-                Some(UserInner::new(
-                    1,
-                    "1".to_string(),
-                    false,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0
-                )),
-            );
-        });
+        let mut txn = db.new_txn();
+        txn.set(
+            0,
+            UserInner::new(0, "0".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
+        );
+        txn.set(
+            1,
+            UserInner::new(1, "1".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
+        );
+        txn.commit().await.unwrap();
+
+        drop(db);
+
+        let db = Db::new(
+            LocalOracle::default(),
+            Fs::new(temp_dir.path()).unwrap(),
+            DbOption::new(temp_dir.path().to_path_buf()),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            db.get(&0, &1).await,
+            Some(UserInner::new(
+                0,
+                "0".to_string(),
+                false,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+            )),
+        );
+        assert_eq!(
+            db.get(&1, &1).await,
+            Some(UserInner::new(
+                1,
+                "1".to_string(),
+                false,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+            )),
+        );
     }
 }

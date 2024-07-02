@@ -5,8 +5,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use executor::futures::StreamExt;
-use futures::Stream;
+use futures::{Stream, StreamExt};
 use pin_project::pin_project;
 
 use crate::{
@@ -96,8 +95,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use executor::futures::StreamExt;
-    use futures::executor::block_on;
+    use futures::{executor::block_on, StreamExt};
 
     use crate::{
         stream::{buf_stream::BufStream, merge_stream::MergeStream, EStreamImpl},

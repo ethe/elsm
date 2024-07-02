@@ -21,7 +21,7 @@ use elsm::{
 };
 use elsm_marco::elsm_schema;
 use executor::{
-    futures::{future::block_on, io, AsyncRead, AsyncWrite},
+    futures::{future::block_on, io},
     ExecutorBuilder,
 };
 use itertools::Itertools;

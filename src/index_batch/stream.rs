@@ -6,7 +6,7 @@ use std::{
 };
 
 use arrow::array::RecordBatch;
-use executor::futures::{Stream, StreamExt};
+use futures::{Stream, StreamExt};
 use pin_project::pin_project;
 
 use crate::{
@@ -98,8 +98,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use executor::futures::StreamExt;
-    use futures::executor::block_on;
+    use futures::{executor::block_on, StreamExt};
 
     use crate::{
         mem_table::MemTable, oracle::LocalOracle, tests::UserInner,

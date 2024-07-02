@@ -4,7 +4,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use executor::futures::{util::StreamExt, Stream};
+use futures::{Stream, StreamExt};
 use pin_project::pin_project;
 
 use crate::{
@@ -108,34 +108,72 @@ where
 
 #[cfg(test)]
 mod tests {
-    use executor::futures::{future::block_on, StreamExt};
+    use futures::StreamExt;
 
     use crate::{mem_table::MemTable, tests::UserInner};
 
-    #[test]
-    fn iterator() {
-        block_on(async {
-            let mut mem_table = MemTable::default();
+    #[tokio::test]
+    async fn iterator() {
+        let mut mem_table = MemTable::default();
 
-            mem_table.insert(
+        mem_table.insert(
+            1,
+            0,
+            Some(UserInner::new(
                 1,
+                "1".to_string(),
+                false,
                 0,
-                Some(UserInner::new(
-                    1,
-                    "1".to_string(),
-                    false,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                )),
-            );
-            mem_table.insert(
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            )),
+        );
+        mem_table.insert(
+            1,
+            1,
+            Some(UserInner::new(
+                2,
+                "2".to_string(),
+                false,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            )),
+        );
+
+        mem_table.insert(
+            2,
+            0,
+            Some(UserInner::new(
                 1,
+                "1".to_string(),
+                false,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            )),
+        );
+
+        let mut iterator = mem_table.iter().await.unwrap();
+
+        assert_eq!(
+            iterator.next().await.unwrap().unwrap(),
+            (
                 1,
                 Some(UserInner::new(
                     2,
@@ -148,13 +186,14 @@ mod tests {
                     0,
                     0,
                     0,
-                    0,
-                )),
-            );
-
-            mem_table.insert(
+                    0
+                ))
+            )
+        );
+        assert_eq!(
+            iterator.next().await.unwrap().unwrap(),
+            (
                 2,
-                0,
                 Some(UserInner::new(
                     1,
                     "1".to_string(),
@@ -166,68 +205,115 @@ mod tests {
                     0,
                     0,
                     0,
-                    0,
-                )),
-            );
+                    0
+                ))
+            )
+        );
 
-            let mut iterator = mem_table.iter().await.unwrap();
+        drop(iterator);
+        mem_table.insert(1, 3, None);
 
-            assert_eq!(
-                iterator.next().await.unwrap().unwrap(),
-                (
-                    1,
-                    Some(UserInner::new(
-                        2,
-                        "2".to_string(),
-                        false,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0
-                    ))
-                )
-            );
-            assert_eq!(
-                iterator.next().await.unwrap().unwrap(),
-                (
-                    2,
-                    Some(UserInner::new(
-                        1,
-                        "1".to_string(),
-                        false,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0
-                    ))
-                )
-            );
+        let mut iterator = mem_table.iter().await.unwrap();
 
-            drop(iterator);
-            mem_table.insert(1, 3, None);
-
-            let mut iterator = mem_table.iter().await.unwrap();
-
-            assert_eq!(iterator.next().await.unwrap().unwrap(), (1, None));
-        });
+        assert_eq!(iterator.next().await.unwrap().unwrap(), (1, None));
     }
 
-    #[test]
-    fn range() {
-        futures::executor::block_on(async {
-            let mut mem_table = MemTable::default();
+    #[tokio::test]
+    async fn range() {
+        let mut mem_table = MemTable::default();
 
-            mem_table.insert(
+        mem_table.insert(
+            1,
+            0,
+            Some(UserInner::new(
                 1,
+                "1".to_string(),
+                false,
                 0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            )),
+        );
+        mem_table.insert(
+            2,
+            0,
+            Some(UserInner::new(
+                2,
+                "2".to_string(),
+                false,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            )),
+        );
+        mem_table.insert(
+            2,
+            1,
+            Some(UserInner::new(
+                3,
+                "3".to_string(),
+                false,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            )),
+        );
+        mem_table.insert(
+            3,
+            0,
+            Some(UserInner::new(
+                3,
+                "3".to_string(),
+                false,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            )),
+        );
+        mem_table.insert(
+            4,
+            0,
+            Some(UserInner::new(
+                4,
+                "4".to_string(),
+                false,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            )),
+        );
+
+        let mut iterator = mem_table.iter().await.unwrap();
+
+        assert_eq!(
+            iterator.next().await.unwrap().unwrap(),
+            (
+                1,
                 Some(UserInner::new(
                     1,
                     "1".to_string(),
@@ -239,29 +325,14 @@ mod tests {
                     0,
                     0,
                     0,
-                    0,
-                )),
-            );
-            mem_table.insert(
+                    0
+                ))
+            )
+        );
+        assert_eq!(
+            iterator.next().await.unwrap().unwrap(),
+            (
                 2,
-                0,
-                Some(UserInner::new(
-                    2,
-                    "2".to_string(),
-                    false,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                )),
-            );
-            mem_table.insert(
-                2,
-                1,
                 Some(UserInner::new(
                     3,
                     "3".to_string(),
@@ -273,12 +344,14 @@ mod tests {
                     0,
                     0,
                     0,
-                    0,
-                )),
-            );
-            mem_table.insert(
+                    0
+                ))
+            )
+        );
+        assert_eq!(
+            iterator.next().await.unwrap().unwrap(),
+            (
                 3,
-                0,
                 Some(UserInner::new(
                     3,
                     "3".to_string(),
@@ -290,12 +363,14 @@ mod tests {
                     0,
                     0,
                     0,
-                    0,
-                )),
-            );
-            mem_table.insert(
+                    0
+                ))
+            )
+        );
+        assert_eq!(
+            iterator.next().await.unwrap().unwrap(),
+            (
                 4,
-                0,
                 Some(UserInner::new(
                     4,
                     "4".to_string(),
@@ -307,131 +382,52 @@ mod tests {
                     0,
                     0,
                     0,
+                    0
+                ))
+            )
+        );
+        assert!(iterator.next().await.is_none());
+
+        let mut iterator = mem_table.range(Some(&2), Some(&3), &0).await.unwrap();
+
+        assert_eq!(
+            iterator.next().await.unwrap().unwrap(),
+            (
+                2,
+                Some(UserInner::new(
+                    2,
+                    "2".to_string(),
+                    false,
                     0,
-                )),
-            );
-
-            let mut iterator = mem_table.iter().await.unwrap();
-
-            assert_eq!(
-                iterator.next().await.unwrap().unwrap(),
-                (
-                    1,
-                    Some(UserInner::new(
-                        1,
-                        "1".to_string(),
-                        false,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0
-                    ))
-                )
-            );
-            assert_eq!(
-                iterator.next().await.unwrap().unwrap(),
-                (
-                    2,
-                    Some(UserInner::new(
-                        3,
-                        "3".to_string(),
-                        false,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0
-                    ))
-                )
-            );
-            assert_eq!(
-                iterator.next().await.unwrap().unwrap(),
-                (
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                ))
+            )
+        );
+        assert_eq!(
+            iterator.next().await.unwrap().unwrap(),
+            (
+                3,
+                Some(UserInner::new(
                     3,
-                    Some(UserInner::new(
-                        3,
-                        "3".to_string(),
-                        false,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0
-                    ))
-                )
-            );
-            assert_eq!(
-                iterator.next().await.unwrap().unwrap(),
-                (
-                    4,
-                    Some(UserInner::new(
-                        4,
-                        "4".to_string(),
-                        false,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0
-                    ))
-                )
-            );
-            assert!(iterator.next().await.is_none());
-
-            let mut iterator = mem_table.range(Some(&2), Some(&3), &0).await.unwrap();
-
-            assert_eq!(
-                iterator.next().await.unwrap().unwrap(),
-                (
-                    2,
-                    Some(UserInner::new(
-                        2,
-                        "2".to_string(),
-                        false,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0
-                    ))
-                )
-            );
-            assert_eq!(
-                iterator.next().await.unwrap().unwrap(),
-                (
-                    3,
-                    Some(UserInner::new(
-                        3,
-                        "3".to_string(),
-                        false,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0
-                    ))
-                )
-            );
-            assert!(iterator.next().await.is_none())
-        });
+                    "3".to_string(),
+                    false,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                ))
+            )
+        );
+        assert!(iterator.next().await.is_none())
     }
 }

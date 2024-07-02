@@ -1,5 +1,4 @@
 use std::{
-    fs::File,
     marker::PhantomData,
     pin::{pin, Pin},
     task::{Context, Poll},
@@ -10,16 +9,14 @@ use arrow::{
     compute::kernels::cmp::{gt_eq, lt_eq},
     datatypes::GenericBinaryType,
 };
-use executor::{
-    fs,
-    futures::{Stream, StreamExt},
-};
+use futures::{Stream, StreamExt};
 use parquet::arrow::{
     arrow_reader::{ArrowPredicate, ArrowPredicateFn, ArrowReaderMetadata, RowFilter},
     async_reader::ParquetRecordBatchStream,
     ParquetRecordBatchStreamBuilder, ProjectionMask,
 };
 use pin_project::pin_project;
+use tokio::fs;
 
 use crate::{
     schema::Schema,
@@ -60,7 +57,9 @@ where
             None
         };
 
-        let mut file = fs::File::from(File::open(option.table_path(gen)).map_err(StreamError::Io)?);
+        let mut file = fs::File::open(option.table_path(gen))
+            .await
+            .map_err(StreamError::Io)?;
         let meta = ArrowReaderMetadata::load_async(&mut file, Default::default())
             .await
             .map_err(StreamError::Parquet)?;

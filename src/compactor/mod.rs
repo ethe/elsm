@@ -1,9 +1,9 @@
-use std::{cmp, collections::VecDeque, fmt::Debug, fs::File, mem, pin::pin, sync::Arc};
+use std::{cmp, collections::VecDeque, fmt::Debug, mem, pin::pin, sync::Arc};
 
-use executor::{fs, futures::StreamExt};
-use futures::channel::oneshot;
-use parquet::arrow::{ArrowWriter, AsyncArrowWriter};
+use futures::{channel::oneshot, StreamExt};
+use parquet::arrow::AsyncArrowWriter;
 use thiserror::Error;
+use tokio::fs::File;
 use ulid::Ulid;
 
 use crate::{
@@ -100,7 +100,9 @@ where
             let mut wal_ids = Vec::with_capacity(batches.len());
 
             let mut writer = AsyncArrowWriter::try_new(
-                fs::File::from(File::create(option.table_path(&gen)).map_err(CompactionError::Io)?),
+                File::create(option.table_path(&gen))
+                    .await
+                    .map_err(CompactionError::Io)?,
                 S::inner_schema(),
                 None,
             )
@@ -247,7 +249,8 @@ where
                         &mut builder,
                         &mut min,
                         &mut max,
-                    )?;
+                    )
+                    .await?;
                     written_size = 0;
                 }
             }
@@ -259,7 +262,8 @@ where
                     &mut builder,
                     &mut min,
                     &mut max,
-                )?;
+                )
+                .await?;
             }
             for scope in meet_scopes_l {
                 version_edits.push(VersionEdit::Remove {
@@ -281,7 +285,7 @@ where
         Ok(())
     }
 
-    fn build_table(
+    async fn build_table(
         option: &DbOption,
         version_edits: &mut Vec<VersionEdit<S::PrimaryKey>>,
         level: usize,
@@ -294,14 +298,19 @@ where
 
         let gen = Ulid::new();
         let batch = builder.finish();
-        let mut writer = ArrowWriter::try_new(
-            File::create(option.table_path(&gen)).map_err(CompactionError::Io)?,
+        let mut writer = AsyncArrowWriter::try_new(
+            File::create(option.table_path(&gen))
+                .await
+                .map_err(CompactionError::Io)?,
             S::inner_schema(),
             None,
         )
         .map_err(CompactionError::Parquet)?;
-        writer.write(&batch).map_err(CompactionError::Parquet)?;
-        writer.close().map_err(CompactionError::Parquet)?;
+        writer
+            .write(&batch)
+            .await
+            .map_err(CompactionError::Parquet)?;
+        writer.close().await.map_err(CompactionError::Parquet)?;
         version_edits.push(VersionEdit::Add {
             level: (level + 1) as u8,
             scope: Scope {
@@ -339,7 +348,6 @@ mod tests {
         fs::File,
     };
 
-    use executor::ExecutorBuilder;
     use futures::channel::mpsc::channel;
     use parquet::arrow::ArrowWriter;
     use tempfile::TempDir;
@@ -397,16 +405,89 @@ mod tests {
         writer.close().unwrap();
     }
 
-    #[test]
-    fn minor_compaction() {
+    #[tokio::test]
+    async fn minor_compaction() {
         let temp_dir = TempDir::new().unwrap();
 
-        ExecutorBuilder::new().build().unwrap().block_on(async {
-            let option = DbOption::new(temp_dir.path().to_path_buf());
+        let option = DbOption::new(temp_dir.path().to_path_buf());
 
-            let batch_1 = build_index_batch::<UserInner>(vec![
+        let batch_1 = build_index_batch::<UserInner>(vec![
+            (
+                UserInner::new(3, "3".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
+                false,
+            ),
+            (
+                UserInner::new(5, "5".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
+                false,
+            ),
+            (
+                UserInner::new(6, "6".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
+                false,
+            ),
+        ])
+        .await;
+        let batch_2 = build_index_batch::<UserInner>(vec![
+            (
+                UserInner::new(4, "4".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
+                false,
+            ),
+            (
+                UserInner::new(2, "2".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
+                false,
+            ),
+            (
+                UserInner::new(1, "1".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
+                false,
+            ),
+        ])
+        .await;
+
+        let scope = Compactor::<UserInner, InMemProvider>::minor_compaction(
+            &option,
+            VecDeque::from(vec![(batch_2, FileId::new()), (batch_1, FileId::new())]),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(scope.min, 1);
+        assert_eq!(scope.max, 6);
+    }
+
+    #[tokio::test]
+    async fn major_compaction() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let mut option = DbOption::new(temp_dir.path().to_path_buf());
+        option.major_threshold_with_sst_size = 2;
+
+        // level 1
+        let table_gen_1 = FileId::new();
+        let table_gen_2 = FileId::new();
+        build_parquet_table(
+            &option,
+            table_gen_1,
+            vec![
+                (
+                    UserInner::new(1, "1".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
+                    false,
+                ),
+                (
+                    UserInner::new(2, "2".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
+                    false,
+                ),
                 (
                     UserInner::new(3, "3".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
+                    false,
+                ),
+            ],
+        )
+        .await;
+        build_parquet_table(
+            &option,
+            table_gen_2,
+            vec![
+                (
+                    UserInner::new(4, "4".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
                     false,
                 ),
                 (
@@ -417,11 +498,20 @@ mod tests {
                     UserInner::new(6, "6".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
                     false,
                 ),
-            ])
-            .await;
-            let batch_2 = build_index_batch::<UserInner>(vec![
+            ],
+        )
+        .await;
+
+        // level 2
+        let table_gen_3 = FileId::new();
+        let table_gen_4 = FileId::new();
+        let table_gen_5 = FileId::new();
+        build_parquet_table(
+            &option,
+            table_gen_3,
+            vec![
                 (
-                    UserInner::new(4, "4".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
+                    UserInner::new(1, "1".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
                     false,
                 ),
                 (
@@ -429,215 +519,129 @@ mod tests {
                     false,
                 ),
                 (
-                    UserInner::new(1, "1".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
+                    UserInner::new(3, "3".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
                     false,
                 ),
-            ])
-            .await;
+            ],
+        )
+        .await;
+        build_parquet_table(
+            &option,
+            table_gen_4,
+            vec![
+                (
+                    UserInner::new(4, "4".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
+                    false,
+                ),
+                (
+                    UserInner::new(5, "5".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
+                    false,
+                ),
+                (
+                    UserInner::new(6, "6".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
+                    false,
+                ),
+            ],
+        )
+        .await;
+        build_parquet_table(
+            &option,
+            table_gen_5,
+            vec![
+                (
+                    UserInner::new(7, "7".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
+                    false,
+                ),
+                (
+                    UserInner::new(8, "8".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
+                    false,
+                ),
+                (
+                    UserInner::new(9, "9".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
+                    false,
+                ),
+            ],
+        )
+        .await;
 
-            let scope = Compactor::<UserInner, InMemProvider>::minor_compaction(
-                &option,
-                VecDeque::from(vec![(batch_2, FileId::new()), (batch_1, FileId::new())]),
-            )
-            .await
-            .unwrap()
-            .unwrap();
+        let (sender, _) = channel(1);
+
+        let mut version = Version::<UserInner> {
+            num: 0,
+            level_slice: Version::<UserInner>::level_slice_new(),
+            clean_sender: sender,
+        };
+        version.level_slice[0].push(Scope {
+            min: 1,
+            max: 3,
+            gen: table_gen_1,
+            wal_ids: None,
+        });
+        version.level_slice[0].push(Scope {
+            min: 4,
+            max: 6,
+            gen: table_gen_2,
+            wal_ids: None,
+        });
+        version.level_slice[1].push(Scope {
+            min: 1,
+            max: 3,
+            gen: table_gen_3,
+            wal_ids: None,
+        });
+        version.level_slice[1].push(Scope {
+            min: 4,
+            max: 6,
+            gen: table_gen_4,
+            wal_ids: None,
+        });
+        version.level_slice[1].push(Scope {
+            min: 7,
+            max: 9,
+            gen: table_gen_5,
+            wal_ids: None,
+        });
+
+        let min = 2;
+        let max = 5;
+        let mut version_edits = Vec::new();
+
+        Compactor::<UserInner, InMemProvider>::major_compaction(
+            &version,
+            &option,
+            &min,
+            &max,
+            &mut version_edits,
+            &mut vec![],
+        )
+        .await
+        .unwrap();
+
+        if let VersionEdit::Add { level, scope } = &version_edits[0] {
+            assert_eq!(*level, 1);
             assert_eq!(scope.min, 1);
             assert_eq!(scope.max, 6);
-        })
-    }
-
-    #[test]
-    fn major_compaction() {
-        let temp_dir = TempDir::new().unwrap();
-
-        ExecutorBuilder::new().build().unwrap().block_on(async {
-            let mut option = DbOption::new(temp_dir.path().to_path_buf());
-            option.major_threshold_with_sst_size = 2;
-
-            // level 1
-            let table_gen_1 = FileId::new();
-            let table_gen_2 = FileId::new();
-            build_parquet_table(
-                &option,
-                table_gen_1,
-                vec![
-                    (
-                        UserInner::new(1, "1".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
-                        false,
-                    ),
-                    (
-                        UserInner::new(2, "2".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
-                        false,
-                    ),
-                    (
-                        UserInner::new(3, "3".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
-                        false,
-                    ),
-                ],
-            )
-            .await;
-            build_parquet_table(
-                &option,
-                table_gen_2,
-                vec![
-                    (
-                        UserInner::new(4, "4".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
-                        false,
-                    ),
-                    (
-                        UserInner::new(5, "5".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
-                        false,
-                    ),
-                    (
-                        UserInner::new(6, "6".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
-                        false,
-                    ),
-                ],
-            )
-            .await;
-
-            // level 2
-            let table_gen_3 = FileId::new();
-            let table_gen_4 = FileId::new();
-            let table_gen_5 = FileId::new();
-            build_parquet_table(
-                &option,
-                table_gen_3,
-                vec![
-                    (
-                        UserInner::new(1, "1".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
-                        false,
-                    ),
-                    (
-                        UserInner::new(2, "2".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
-                        false,
-                    ),
-                    (
-                        UserInner::new(3, "3".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
-                        false,
-                    ),
-                ],
-            )
-            .await;
-            build_parquet_table(
-                &option,
-                table_gen_4,
-                vec![
-                    (
-                        UserInner::new(4, "4".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
-                        false,
-                    ),
-                    (
-                        UserInner::new(5, "5".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
-                        false,
-                    ),
-                    (
-                        UserInner::new(6, "6".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
-                        false,
-                    ),
-                ],
-            )
-            .await;
-            build_parquet_table(
-                &option,
-                table_gen_5,
-                vec![
-                    (
-                        UserInner::new(7, "7".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
-                        false,
-                    ),
-                    (
-                        UserInner::new(8, "8".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
-                        false,
-                    ),
-                    (
-                        UserInner::new(9, "9".to_string(), false, 0, 0, 0, 0, 0, 0, 0, 0),
-                        false,
-                    ),
-                ],
-            )
-            .await;
-
-            let (sender, _) = channel(1);
-
-            let mut version = Version::<UserInner> {
-                num: 0,
-                level_slice: Version::<UserInner>::level_slice_new(),
-                clean_sender: sender,
-            };
-            version.level_slice[0].push(Scope {
-                min: 1,
-                max: 3,
-                gen: table_gen_1,
-                wal_ids: None,
-            });
-            version.level_slice[0].push(Scope {
-                min: 4,
-                max: 6,
-                gen: table_gen_2,
-                wal_ids: None,
-            });
-            version.level_slice[1].push(Scope {
-                min: 1,
-                max: 3,
-                gen: table_gen_3,
-                wal_ids: None,
-            });
-            version.level_slice[1].push(Scope {
-                min: 4,
-                max: 6,
-                gen: table_gen_4,
-                wal_ids: None,
-            });
-            version.level_slice[1].push(Scope {
-                min: 7,
-                max: 9,
-                gen: table_gen_5,
-                wal_ids: None,
-            });
-
-            let min = 2;
-            let max = 5;
-            let mut version_edits = Vec::new();
-
-            Compactor::<UserInner, InMemProvider>::major_compaction(
-                &version,
-                &option,
-                &min,
-                &max,
-                &mut version_edits,
-                &mut vec![],
-            )
-            .await
-            .unwrap();
-
-            if let VersionEdit::Add { level, scope } = &version_edits[0] {
-                assert_eq!(*level, 1);
-                assert_eq!(scope.min, 1);
-                assert_eq!(scope.max, 6);
-            }
-            assert_eq!(
-                version_edits[1..5].to_vec(),
-                vec![
-                    VersionEdit::Remove {
-                        level: 0,
-                        gen: table_gen_1,
-                    },
-                    VersionEdit::Remove {
-                        level: 0,
-                        gen: table_gen_2,
-                    },
-                    VersionEdit::Remove {
-                        level: 1,
-                        gen: table_gen_3,
-                    },
-                    VersionEdit::Remove {
-                        level: 1,
-                        gen: table_gen_4,
-                    },
-                ]
-            )
-        })
+        }
+        assert_eq!(
+            version_edits[1..5].to_vec(),
+            vec![
+                VersionEdit::Remove {
+                    level: 0,
+                    gen: table_gen_1,
+                },
+                VersionEdit::Remove {
+                    level: 0,
+                    gen: table_gen_2,
+                },
+                VersionEdit::Remove {
+                    level: 1,
+                    gen: table_gen_3,
+                },
+                VersionEdit::Remove {
+                    level: 1,
+                    gen: table_gen_4,
+                },
+            ]
+        )
     }
 }

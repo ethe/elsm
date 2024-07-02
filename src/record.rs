@@ -1,7 +1,7 @@
 use std::{io, mem::size_of};
 
-use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use thiserror::Error;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::{
     oracle::TimeStamp,
