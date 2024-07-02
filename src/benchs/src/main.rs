@@ -20,12 +20,13 @@ use elsm::{
     Db, DbOption,
 };
 use elsm_marco::elsm_schema;
-use executor::{
-    futures::{future::block_on, io},
-    ExecutorBuilder,
-};
 use itertools::Itertools;
 use lazy_static::lazy_static;
+use rand::{distributions::Alphanumeric, rngs::StdRng, Rng, SeedableRng};
+use tokio::{
+    io,
+    io::{AsyncRead, AsyncWrite},
+};
 
 fn counter() -> usize {
     use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
@@ -72,20 +73,21 @@ fn random(n: u32) -> u32 {
 fn elsm_bulk_load(c: &mut Criterion) {
     let count = AtomicU32::new(0_u32);
     let bytes = |len| -> String {
-        String::from_utf8(
-            count
-                .fetch_add(1, Ordering::Relaxed)
-                .to_be_bytes()
-                .into_iter()
-                .cycle()
-                .take(len)
-                .collect_vec(),
-        )
-        .unwrap()
+        let mut r = StdRng::seed_from_u64(42);
+
+        r.sample_iter(&Alphanumeric)
+            .take(len)
+            .map(char::from)
+            .collect()
     };
 
     let mut bench = |key_len, val_len| {
-        let db = block_on(async {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(8)
+            .enable_all()
+            .build()
+            .unwrap();
+        let db = rt.block_on(async {
             Db::new(
                 LocalOracle::default(),
                 InMemProvider::default(),
@@ -98,16 +100,15 @@ fn elsm_bulk_load(c: &mut Criterion) {
         c.bench_function(
             &format!("bulk load key/value lengths {}/{}", key_len, val_len),
             |b| {
-                b.to_async(ExecutorBuilder::new().build().unwrap())
-                    .iter(|| async {
-                        db.write(
-                            RecordType::Full,
-                            0,
-                            TestStringInner::new(bytes(key_len), bytes(val_len)),
-                        )
-                        .await
-                        .unwrap();
-                    })
+                b.to_async(&rt).iter(|| async {
+                    db.write(
+                        RecordType::Full,
+                        0,
+                        TestStringInner::new(bytes(key_len), bytes(val_len)),
+                    )
+                    .await
+                    .unwrap();
+                })
             },
         );
     };
@@ -120,7 +121,12 @@ fn elsm_bulk_load(c: &mut Criterion) {
 }
 
 fn elsm_monotonic_crud(c: &mut Criterion) {
-    let db = block_on(async {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(8)
+        .enable_all()
+        .build()
+        .unwrap();
+    let db = rt.block_on(async {
         Db::new(
             LocalOracle::default(),
             InMemProvider::default(),
@@ -132,38 +138,39 @@ fn elsm_monotonic_crud(c: &mut Criterion) {
 
     c.bench_function("monotonic inserts", |b| {
         let count = AtomicU32::new(0_u32);
-        b.to_async(ExecutorBuilder::new().build().unwrap())
-            .iter(|| async {
-                let count = count.fetch_add(1, Ordering::Relaxed);
-                db.write(RecordType::Full, 0, UserInner::new(count, count))
-                    .await
-                    .unwrap();
-            })
+        b.to_async(&rt).iter(|| async {
+            let count = count.fetch_add(1, Ordering::Relaxed);
+            db.write(RecordType::Full, 0, UserInner::new(count, count))
+                .await
+                .unwrap();
+        })
     });
 
     c.bench_function("monotonic gets", |b| {
         let count = AtomicU32::new(0_u32);
-        b.to_async(ExecutorBuilder::new().build().unwrap())
-            .iter(|| async {
-                let count = count.fetch_add(1, Ordering::Relaxed);
-                db.get(&count, &0).await.unwrap();
-            })
+        b.to_async(&rt).iter(|| async {
+            let count = count.fetch_add(1, Ordering::Relaxed);
+            db.get(&count, &0).await.unwrap();
+        })
     });
 
     c.bench_function("monotonic removals", |b| {
         let count = AtomicU32::new(0_u32);
-        b.to_async(ExecutorBuilder::new().build().unwrap())
-            .iter(|| async {
-                let count = count.fetch_add(1, Ordering::Relaxed);
-                db.remove(RecordType::Full, 0, count).await.unwrap();
-            })
+        b.to_async(&rt).iter(|| async {
+            let count = count.fetch_add(1, Ordering::Relaxed);
+            db.remove(RecordType::Full, 0, count).await.unwrap();
+        })
     });
 }
 
 fn elsm_random_crud(c: &mut Criterion) {
     const SIZE: u32 = 65536;
-
-    let db = block_on(async {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(8)
+        .enable_all()
+        .build()
+        .unwrap();
+    let db = rt.block_on(async {
         Db::new(
             LocalOracle::default(),
             InMemProvider::default(),
@@ -174,47 +181,48 @@ fn elsm_random_crud(c: &mut Criterion) {
     });
 
     c.bench_function("random inserts", |b| {
-        b.to_async(ExecutorBuilder::new().build().unwrap())
-            .iter(|| async {
-                db.write(
-                    RecordType::Full,
-                    0,
-                    UserInner::new(random(SIZE), random(SIZE)),
-                )
-                .await
-                .unwrap();
-            })
+        b.to_async(&rt).iter(|| async {
+            db.write(
+                RecordType::Full,
+                0,
+                UserInner::new(random(SIZE), random(SIZE)),
+            )
+            .await
+            .unwrap();
+        })
     });
 
     c.bench_function("random gets", |b| {
-        b.to_async(ExecutorBuilder::new().build().unwrap())
-            .iter(|| async {
-                db.get(&random(SIZE), &0).await.unwrap();
-            })
+        b.to_async(&rt).iter(|| async {
+            db.get(&random(SIZE), &0).await.unwrap();
+        })
     });
 
     c.bench_function("random removals", |b| {
-        b.to_async(ExecutorBuilder::new().build().unwrap())
-            .iter(|| async {
-                db.remove(RecordType::Full, 0, random(SIZE)).await.unwrap();
-            })
+        b.to_async(&rt).iter(|| async {
+            db.remove(RecordType::Full, 0, random(SIZE)).await.unwrap();
+        })
     });
 }
 
 fn elsm_empty_opens(c: &mut Criterion) {
     let _ = std::fs::remove_dir_all("empty_opens");
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(8)
+        .enable_all()
+        .build()
+        .unwrap();
 
     c.bench_function("empty opens", |b| {
-        b.to_async(ExecutorBuilder::new().build().unwrap())
-            .iter(|| async {
-                Db::<UserInner, LocalOracle<<UserInner as Schema>::PrimaryKey>, InMemProvider>::new(
-                    LocalOracle::default(),
-                    InMemProvider::default(),
-                    DbOption::new(format!("empty_opens/{}/", counter())),
-                )
-                .await
-                .unwrap()
-            })
+        b.to_async(&rt).iter(|| async {
+            Db::<UserInner, LocalOracle<<UserInner as Schema>::PrimaryKey>, InMemProvider>::new(
+                LocalOracle::default(),
+                InMemProvider::default(),
+                DbOption::new(format!("empty_opens/{}/", counter())),
+            )
+            .await
+            .unwrap()
+        })
     });
     let _ = std::fs::remove_dir_all("empty_opens");
 }
