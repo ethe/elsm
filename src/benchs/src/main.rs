@@ -150,7 +150,7 @@ fn elsm_monotonic_crud(c: &mut Criterion) {
         let count = AtomicU32::new(0_u32);
         b.to_async(&rt).iter(|| async {
             let count = count.fetch_add(1, Ordering::Relaxed);
-            db.get(&count, &0).await.unwrap();
+            let _ = db.get(&count, &0).await;
         })
     });
 
