@@ -177,6 +177,7 @@ pub fn elsm_schema(_args: TokenStream, input: TokenStream) -> TokenStream {
                             base_ty: field.ty.clone(),
                             array_ty,
                             builder_ty,
+                            is_string,
                         });
                     }
                     Err(err) => return TokenStream::from(err.to_compile_error()),
@@ -190,7 +191,18 @@ pub fn elsm_schema(_args: TokenStream, input: TokenStream) -> TokenStream {
         base_ty,
         array_ty,
         builder_ty,
+        is_string,
     } = primary_key_definitions.unwrap();
+
+    let primary_key_append_value = if is_string {
+        quote! {
+            primary_key
+        }
+    } else {
+        quote! {
+            *primary_key
+        }
+    };
 
     let inner_schema_name = Ident::new(
         &format!("{}_INNER_SCHEMA", struct_name.to_string().to_uppercase()),
@@ -263,7 +275,7 @@ pub fn elsm_schema(_args: TokenStream, input: TokenStream) -> TokenStream {
             }
 
             fn primary_key(&self) -> Self::PrimaryKey {
-                self.inner.#primary_key_name
+                self.inner.#primary_key_name.to_owned()
             }
 
             fn builder() -> Self::Builder {
@@ -282,7 +294,8 @@ pub fn elsm_schema(_args: TokenStream, input: TokenStream) -> TokenStream {
                     .as_any()
                     .downcast_ref::<#array_ty>()
                     .unwrap()
-                    .value(offset);
+                    .value(offset)
+                    .to_owned();
                 let struct_array = batch
                     .column(1)
                     .as_any()
@@ -294,7 +307,7 @@ pub fn elsm_schema(_args: TokenStream, input: TokenStream) -> TokenStream {
 
                 #(#inner_from_batch_arrays)*
                 (
-                    #primary_key_name,
+                    #primary_key_name.clone(),
                     Some(#inner_struct_name {
                         inner: Arc::new(#struct_name { #(#new_fields_definitions)* }),
                     }),
@@ -342,7 +355,7 @@ pub fn elsm_schema(_args: TokenStream, input: TokenStream) -> TokenStream {
 
         impl Builder<#inner_struct_name> for #builder_name {
             fn add(&mut self, primary_key: &<#inner_struct_name as Schema>::PrimaryKey, schema: Option<#inner_struct_name>) {
-                self.#primary_key_name.append_value(*primary_key);
+                self.#primary_key_name.append_value(#primary_key_append_value);
 
                 if let Some(schema) = schema {
                     #(#builder_append_value)*

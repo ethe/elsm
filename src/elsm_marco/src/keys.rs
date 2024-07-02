@@ -7,6 +7,7 @@ pub(crate) struct PrimaryKey {
     pub(crate) base_ty: Type,
     pub(crate) array_ty: TokenStream,
     pub(crate) builder_ty: TokenStream,
+    pub(crate) is_string: bool,
 }
 
 #[derive(Clone)]

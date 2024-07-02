@@ -1,10 +1,9 @@
-use executor::futures::{
-    util::{AsyncReadExt, AsyncWriteExt},
-    AsyncRead, AsyncWrite,
-};
-use snowflake::ProcessUniqueId;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use crate::serdes::{Decode, Encode};
+use crate::{
+    serdes::{Decode, Encode},
+    wal::FileId,
+};
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct Scope<K>
@@ -13,7 +12,8 @@ where
 {
     pub(crate) min: K,
     pub(crate) max: K,
-    pub(crate) gen: ProcessUniqueId,
+    pub(crate) gen: FileId,
+    pub(crate) wal_ids: Option<Vec<FileId>>,
 }
 
 impl<K> Clone for Scope<K>
@@ -25,6 +25,7 @@ where
             min: self.min.clone(),
             max: self.max.clone(),
             gen: self.gen,
+            wal_ids: self.wal_ids.clone(),
         }
     }
 }
@@ -58,9 +59,20 @@ where
         self.min.encode(writer).await?;
         self.max.encode(writer).await?;
 
-        writer
-            .write_all(&bincode::serialize(&self.gen).unwrap())
-            .await?;
+        writer.write_all(&self.gen.to_bytes()).await?;
+
+        match &self.wal_ids {
+            None => {
+                0u8.encode(writer).await?;
+            }
+            Some(ids) => {
+                1u8.encode(writer).await?;
+                (ids.len() as u32).encode(writer).await?;
+                for id in ids {
+                    writer.write_all(&id.to_bytes()).await?;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -83,9 +95,29 @@ where
         let gen = {
             let mut slice = [0; 16];
             reader.read_exact(&mut slice).await?;
-            bincode::deserialize(&slice).unwrap()
+            FileId::from_bytes(slice)
+        };
+        let wal_ids = match u8::decode(reader).await? {
+            0 => None,
+            1 => {
+                let len = u32::decode(reader).await? as usize;
+                let mut ids = Vec::with_capacity(len);
+
+                for _ in 0..len {
+                    let mut slice = [0; 16];
+                    reader.read_exact(&mut slice).await?;
+                    ids.push(FileId::from_bytes(slice));
+                }
+                Some(ids)
+            }
+            _ => unreachable!(),
         };
 
-        Ok(Scope { min, max, gen })
+        Ok(Scope {
+            min,
+            max,
+            gen,
+            wal_ids,
+        })
     }
 }

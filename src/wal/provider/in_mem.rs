@@ -1,5 +1,6 @@
 use std::{
     io,
+    io::{Cursor, Error},
     pin::{pin, Pin},
     sync::Arc,
     task::{Context, Poll},
@@ -7,10 +8,12 @@ use std::{
 
 use async_stream::stream;
 use crossbeam_queue::SegQueue;
-use executor::futures::Stream;
-use futures::{io::Cursor, ready, AsyncRead, AsyncWrite};
+use futures::{ready, Stream};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use ulid::Ulid;
 
 use super::WalProvider;
+use crate::wal::FileId;
 
 #[derive(Debug, Default, Clone)]
 pub struct InMemProvider {
@@ -26,20 +29,25 @@ impl InMemProvider {
 impl WalProvider for InMemProvider {
     type File = Buf;
 
-    async fn open(&self, _fid: u32) -> std::io::Result<Self::File> {
+    async fn open(&self, _fid: FileId) -> std::io::Result<Self::File> {
         Ok(Buf {
             buf: Some(Cursor::new(Vec::new())),
             wals: self.wals.clone(),
         })
     }
 
-    fn list(&self) -> impl Stream<Item = io::Result<Self::File>> {
-        stream! {
-            yield Ok(Buf {
+    fn remove(&self, _fid: FileId) -> io::Result<()> {
+        // FIXME
+        Ok(())
+    }
+
+    fn list(&self) -> io::Result<impl Stream<Item = io::Result<(Self::File, FileId)>>> {
+        Ok(stream! {
+            yield Ok((Buf {
                 buf: Some(Cursor::new(Vec::new())),
                 wals: self.wals.clone(),
-            })
-        }
+            }, Ulid::new()))
+        })
     }
 }
 
@@ -61,8 +69,8 @@ impl AsyncWrite for Buf {
         pin!(self.buf.as_mut().unwrap()).poll_flush(cx)
     }
 
-    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        if let Err(e) = ready!(pin!(self.buf.as_mut().unwrap()).poll_close(cx)) {
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+        if let Err(e) = ready!(pin!(self.buf.as_mut().unwrap()).poll_shutdown(cx)) {
             return Poll::Ready(Err(e));
         }
         let buf = self.buf.take().unwrap().into_inner();
@@ -75,8 +83,8 @@ impl AsyncRead for Buf {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<io::Result<usize>> {
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
         pin!(self.buf.as_mut().unwrap()).poll_read(cx, buf)
     }
 }

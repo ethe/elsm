@@ -44,7 +44,7 @@ impl<K> WriteConflict<K> {
 }
 
 #[derive(Debug)]
-pub(crate) struct LocalOracle<K>
+pub struct LocalOracle<K>
 where
     K: Ord,
 {

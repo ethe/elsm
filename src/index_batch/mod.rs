@@ -54,94 +54,90 @@ where
 
 #[cfg(test)]
 mod tests {
-    use executor::ExecutorBuilder;
-
     use crate::{
         mem_table::MemTable, oracle::LocalOracle, tests::UserInner,
         wal::provider::in_mem::InMemProvider, Db,
     };
 
-    #[test]
-    fn find() {
-        ExecutorBuilder::new().build().unwrap().block_on(async {
-            let mut mem_table = MemTable::default();
+    #[tokio::test]
+    async fn find() {
+        let mut mem_table = MemTable::default();
 
-            mem_table.insert(
+        mem_table.insert(
+            1,
+            0,
+            Some(UserInner::new(
                 1,
+                "1".to_string(),
+                false,
                 0,
-                Some(UserInner::new(
-                    1,
-                    "1".to_string(),
-                    false,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                )),
-            );
-            mem_table.insert(1, 1, None);
-            mem_table.insert(
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            )),
+        );
+        mem_table.insert(1, 1, None);
+        mem_table.insert(
+            2,
+            0,
+            Some(UserInner::new(
                 2,
+                "2".to_string(),
+                false,
                 0,
-                Some(UserInner::new(
-                    2,
-                    "2".to_string(),
-                    false,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                )),
-            );
-            mem_table.insert(3, 0, None);
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            )),
+        );
+        mem_table.insert(3, 0, None);
 
-            let batch = Db::<UserInner, LocalOracle<u64>, InMemProvider>::freeze(mem_table)
-                .await
-                .unwrap();
+        let batch = Db::<UserInner, LocalOracle<u64>, InMemProvider>::freeze(mem_table)
+            .await
+            .unwrap();
 
-            assert_eq!(
-                batch.find(&1, &0).await,
-                Some(Some(UserInner::new(
-                    1,
-                    "1".to_string(),
-                    false,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0
-                )))
-            );
-            assert_eq!(batch.find(&1, &1).await, Some(None));
+        assert_eq!(
+            batch.find(&1, &0).await,
+            Some(Some(UserInner::new(
+                1,
+                "1".to_string(),
+                false,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+            )))
+        );
+        assert_eq!(batch.find(&1, &1).await, Some(None));
 
-            assert_eq!(
-                batch.find(&2, &0).await,
-                Some(Some(UserInner::new(
-                    2,
-                    "2".to_string(),
-                    false,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0
-                )))
-            );
-            assert_eq!(batch.find(&3, &0).await, Some(None));
-        });
+        assert_eq!(
+            batch.find(&2, &0).await,
+            Some(Some(UserInner::new(
+                2,
+                "2".to_string(),
+                false,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+            )))
+        );
+        assert_eq!(batch.find(&3, &0).await, Some(None));
     }
 }

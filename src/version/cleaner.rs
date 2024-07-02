@@ -1,15 +1,16 @@
 use std::{collections::BTreeMap, fs, io, sync::Arc};
 
-use executor::futures::StreamExt;
-use futures::channel::mpsc::{channel, Receiver, Sender};
-use snowflake::ProcessUniqueId;
+use futures::{
+    channel::mpsc::{channel, Receiver, Sender},
+    StreamExt,
+};
 
-use crate::DbOption;
+use crate::{wal::FileId, DbOption};
 
 pub(crate) enum CleanTag {
     Add {
         version_num: usize,
-        gens: Vec<ProcessUniqueId>,
+        gens: Vec<FileId>,
     },
     Clean {
         version_num: usize,
@@ -18,7 +19,7 @@ pub(crate) enum CleanTag {
 
 pub(crate) struct Cleaner {
     tag_recv: Receiver<CleanTag>,
-    gens_map: BTreeMap<usize, (Vec<ProcessUniqueId>, bool)>,
+    gens_map: BTreeMap<usize, (Vec<FileId>, bool)>,
     option: Arc<DbOption>,
 }
 

@@ -2,26 +2,23 @@ pub(crate) mod cleaner;
 pub(crate) mod edit;
 pub(crate) mod set;
 
-use std::{fs::File, mem, sync::Arc};
+use std::{mem, sync::Arc};
 
 use arrow::{
     array::{RecordBatch, Scalar},
     compute::kernels::cmp::eq,
 };
-use executor::{
-    fs,
-    futures::{util::SinkExt, StreamExt},
-};
 use futures::{
     channel::mpsc::{SendError, Sender},
     executor::block_on,
+    SinkExt, StreamExt,
 };
 use parquet::arrow::{
     arrow_reader::{ArrowPredicateFn, ArrowReaderMetadata, RowFilter},
     ParquetRecordBatchStreamBuilder, ProjectionMask,
 };
-use snowflake::ProcessUniqueId;
 use thiserror::Error;
+use tokio::fs;
 use tracing::error;
 
 use crate::{
@@ -30,6 +27,7 @@ use crate::{
     serdes::Encode,
     stream::{level_stream::LevelStream, table_stream::TableStream, EStreamImpl, StreamError},
     version::cleaner::CleanTag,
+    wal::FileId,
     DbOption,
 };
 
@@ -149,12 +147,13 @@ where
     }
 
     async fn read_parquet(
-        scope_gen: &ProcessUniqueId,
+        scope_gen: &FileId,
         key_scalar: &S::PrimaryKeyArray,
         option: &DbOption,
     ) -> Result<Option<RecordBatch>, VersionError<S>> {
-        let mut file =
-            fs::File::from(File::open(option.table_path(scope_gen)).map_err(VersionError::Io)?);
+        let mut file = fs::File::open(option.table_path(scope_gen))
+            .await
+            .map_err(VersionError::Io)?;
         let meta = ArrowReaderMetadata::load_async(&mut file, Default::default())
             .await
             .map_err(VersionError::Parquet)?;

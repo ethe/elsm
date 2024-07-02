@@ -1,0 +1,21 @@
+[package]
+name = "benchs"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[[bench]]
+name = "benchmark"
+path = "src/main.rs"
+harness = false
+
+[dependencies]
+arrow = "51"
+criterion = { version = "0.3", features = ["async_tokio", "html_reports"] }
+elsm = { path = "../../../elsm" }
+elsm_marco = { path = "../elsm_marco" }
+itertools = "0.13"
+lazy_static = "1"
+rand = "0.8"
+tokio = { version = "1", features = ["full"] }

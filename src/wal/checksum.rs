@@ -1,12 +1,14 @@
 use std::{
     hash::Hasher,
     io,
+    io::Error,
     pin::Pin,
     task::{Context, Poll},
 };
 
-use futures::{ready, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use futures::ready;
 use pin_project_lite::pin_project;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
 pin_project! {
     pub(crate) struct HashWriter<W: AsyncWrite> {
@@ -34,7 +36,7 @@ impl<W: AsyncWrite> AsyncWrite for HashWriter<W> {
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
+    ) -> Poll<Result<usize, Error>> {
         let this = self.project();
 
         Poll::Ready(match ready!(this.writer.poll_write(cx, buf)) {
@@ -50,8 +52,8 @@ impl<W: AsyncWrite> AsyncWrite for HashWriter<W> {
         self.project().writer.poll_flush(cx)
     }
 
-    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        self.project().writer.poll_close(cx)
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+        self.project().writer.poll_shutdown(cx)
     }
 }
 
@@ -84,14 +86,14 @@ impl<R: AsyncRead> AsyncRead for HashReader<R> {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<io::Result<usize>> {
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
         let this = self.project();
         match this.reader.poll_read(cx, buf) {
             Poll::Ready(ready) => Poll::Ready(match ready {
-                Ok(n) => {
-                    this.hasher.write(&buf[..n]);
-                    Ok(n)
+                Ok(()) => {
+                    this.hasher.write(buf.filled());
+                    Ok(())
                 }
                 e => e,
             }),

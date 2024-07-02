@@ -1,17 +1,17 @@
 use std::{fs::OpenOptions, io::SeekFrom, sync::Arc};
 
 use async_lock::RwLock;
-use executor::{
+use futures::{channel::mpsc::Sender, SinkExt};
+use tokio::{
     fs,
-    futures::{util::SinkExt, AsyncSeekExt, AsyncWriteExt},
+    io::{AsyncSeekExt, AsyncWriteExt},
 };
-use futures::channel::mpsc::Sender;
-use snowflake::ProcessUniqueId;
 
 use crate::{
     schema::Schema,
     serdes::Encode,
     version::{cleaner::CleanTag, edit::VersionEdit, Version, VersionError, VersionRef},
+    wal::{provider::WalProvider, FileId, WalManager},
     DbOption,
 };
 
@@ -23,33 +23,39 @@ where
     log: fs::File,
 }
 
-pub(crate) struct VersionSet<S>
+pub(crate) struct VersionSet<S, WP>
 where
     S: Schema,
+    WP: WalProvider,
 {
     inner: Arc<RwLock<VersionSetInner<S>>>,
     clean_sender: Sender<CleanTag>,
+    wal_manager: Arc<WalManager<WP>>,
 }
 
-impl<S> Clone for VersionSet<S>
+impl<S, WP> Clone for VersionSet<S, WP>
 where
     S: Schema,
+    WP: WalProvider,
 {
     fn clone(&self) -> Self {
         VersionSet {
             inner: self.inner.clone(),
             clean_sender: self.clean_sender.clone(),
+            wal_manager: self.wal_manager.clone(),
         }
     }
 }
 
-impl<S> VersionSet<S>
+impl<S, WP> VersionSet<S, WP>
 where
     S: Schema,
+    WP: WalProvider,
 {
     pub(crate) async fn new(
         option: &DbOption,
         clean_sender: Sender<CleanTag>,
+        wal_manager: Arc<WalManager<WP>>,
     ) -> Result<Self, VersionError<S>> {
         let mut log = fs::File::from(
             OpenOptions::new()
@@ -62,7 +68,7 @@ where
         let edits = VersionEdit::recover(&mut log).await;
         log.seek(SeekFrom::End(0)).await.map_err(VersionError::Io)?;
 
-        let set = VersionSet::<S> {
+        let set = VersionSet::<S, WP> {
             inner: Arc::new(RwLock::new(VersionSetInner {
                 current: Arc::new(Version {
                     num: 0,
@@ -72,6 +78,7 @@ where
                 log,
             })),
             clean_sender,
+            wal_manager,
         };
         set.apply_edits(edits, None, true).await?;
 
@@ -85,7 +92,7 @@ where
     pub(crate) async fn apply_edits(
         &self,
         version_edits: Vec<VersionEdit<S::PrimaryKey>>,
-        delete_gens: Option<Vec<ProcessUniqueId>>,
+        delete_gens: Option<Vec<FileId>>,
         is_recover: bool,
     ) -> Result<(), VersionError<S>> {
         let mut guard = self.inner.write().await;
@@ -100,7 +107,12 @@ where
                     .map_err(VersionError::Encode)?;
             }
             match version_edit {
-                VersionEdit::Add { scope, level } => {
+                VersionEdit::Add { mut scope, level } => {
+                    if let Some(wal_ids) = scope.wal_ids.take() {
+                        for wal_id in wal_ids {
+                            self.wal_manager.remove_wal_file(wal_id).unwrap();
+                        }
+                    }
                     new_version.level_slice[level as usize].push(scope);
                 }
                 VersionEdit::Remove { gen, level } => {

@@ -1,18 +1,22 @@
 use std::{
     fs,
-    fs::OpenOptions,
+    fs::{DirEntry, OpenOptions},
     io,
     path::{Path, PathBuf},
 };
 
 use async_stream::stream;
-use executor::futures::Stream;
+use futures::Stream;
+use itertools::Itertools;
 use once_cell::sync::Lazy;
 use regex::Regex;
+use tokio::fs::File;
 
 use super::WalProvider;
+use crate::wal::FileId;
 
-static WAL_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\d+\.wal$").unwrap());
+static WAL_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}\.wal$").unwrap());
 
 pub struct Fs {
     path: PathBuf,
@@ -28,9 +32,9 @@ impl Fs {
 }
 
 impl WalProvider for Fs {
-    type File = executor::fs::File;
+    type File = File;
 
-    async fn open(&self, fid: u32) -> io::Result<Self::File> {
+    async fn open(&self, fid: FileId) -> io::Result<Self::File> {
         Ok(OpenOptions::new()
             .create(true)
             .write(true)
@@ -39,23 +43,35 @@ impl WalProvider for Fs {
             .into())
     }
 
-    fn list(&self) -> impl Stream<Item = io::Result<Self::File>> {
-        stream! {
-            for entry in fs::read_dir(&self.path)? {
-                let entry = entry?;
+    fn remove(&self, fid: FileId) -> io::Result<()> {
+        let _ = fs::remove_file(self.path.join(format!("{}.wal", fid)));
+        Ok(())
+    }
+
+    fn list(&self) -> io::Result<impl Stream<Item = io::Result<(Self::File, FileId)>>> {
+        let mut entries: Vec<DirEntry> = fs::read_dir(&self.path)?.try_collect()?;
+        entries.sort_by_key(|entry| entry.file_name());
+
+        Ok(stream! {
+            for entry in entries {
                 let path = entry.path();
                 if path.is_file() {
                     if let Some(filename) = path.file_name().and_then(|s| s.to_str()) {
                         if WAL_REGEX.is_match(filename) {
-                            yield Ok(OpenOptions::new()
+                            // SAFETY: Checked on WAL_REGEX
+                            let file_id = FileId::from_string(filename
+                                .split('.')
+                                .next()
+                                .unwrap()).unwrap();
+                            yield Ok((OpenOptions::new()
                                 .create(true)
                                 .write(true)
                                 .read(true)
-                                .open(self.path.join(filename))?.into())
+                                .open(self.path.join(filename))?.into(), file_id))
                         }
                     }
                 }
             }
-        }
+        })
     }
 }
